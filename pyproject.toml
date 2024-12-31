@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "swarm-deployment"
+version = "0.1.0"
+description = ""
+authors = ["Mirzomumin <mirzomumin@list.ru>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "3.13"
+django = "^5.1.4"
+gunicorn = "^23.0.0"
+flower = "^2.0.1"
+psycopg = "^3.2.3"
+celery = "^5.4.0"
+django-celery-results = "^2.5.1"
+python-dotenv = "^1.0.1"
+gevent = "^24.11.1"
+redis = "^5.2.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

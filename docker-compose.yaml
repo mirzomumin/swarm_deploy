@@ -1,0 +1,398 @@
+
+
+services:
+  app:
+    image: app:latest
+    command: sh ./command.sh app
+    env_file: ./.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/www/static:/code/static
+      - /var/www/media:/code/media
+    healthcheck:
+      test: python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/server/healthcheck/', timeout=5).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+#      resources:
+#        limits:
+#          cpus: "0.75"
+#          memory: 1536M
+#        reservations:
+#          cpus: "0.75"
+#          memory: 1024
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - postgres
+      - pgbouncer
+      - redis
+    networks:
+      - mohirpay_net
+
+  worker:
+    image: app:latest
+    command: sh ./command.sh worker
+    env_file: ./.env
+    healthcheck:
+      # test: ["CMD", "celery inspect ping --destination celery@$$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A config inspect ping | grep pong"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+#      resources:
+#        # Hard limit - Docker does not allow to allocate more
+#        limits:
+#          cpus: '0.30'
+#          memory: 512M
+#        # Soft limit - Docker makes the best effort to return to it
+#        reservations:
+#          cpus: '0.30'
+#          memory: 256M
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - app
+      - redis
+      - pgbouncer
+    networks:
+      - mohirpay_net
+
+  beat:
+    image: app:latest
+    # build: .
+    env_file: ./.env
+    command: sh ./command.sh beat
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+#      resources:
+#        # Hard limit - Docker does not allow to allocate more
+#        limits:
+#          cpus: '0.30'
+#          memory: 512M
+#        # Soft limit - Docker makes the best effort to return to it
+#        reservations:
+#          cpus: '0.30'
+#          memory: 256M
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - app
+      - redis
+      - pgbouncer
+    networks:
+      - mohirpay_net
+
+  redis:
+    image: redis/redis-stack-server:latest
+    volumes:
+      - mohirpay_cache:/var/lib/redis/data
+    ports:
+      - "6378:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  flower:
+    image: app:latest
+    env_file: ./.env
+    command: sh ./command.sh flower
+    depends_on:
+      - app
+      - redis
+      - worker
+    ports:
+      - "5555:5555"
+    volumes:
+      - mohirpay_flower:/var/lib/flower/data
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  pgbouncer:
+    image: edoburu/pgbouncer
+    env_file: ./.env
+    volumes:
+      - .env:/.env
+    environment:
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      LISTEN_ADDR: 0.0.0.0
+      LISTEN_PORT: 6432
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: 1000
+    ports:
+      - 6432:6432
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  loki:
+    image: grafana/loki:2.9.2
+    env_file: ./.env
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  promtail:
+    image: grafana/promtail:2.9.2
+    env_file: ./.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./promtail-config.yml:/etc/promtail/config.yml
+      - /var/log:/var/log
+    command: -config.file=/etc/promtail/config.yml
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  grafana:
+    env_file: ./.env
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_PASS}
+      - GF_SERVER_ROOT_URL=http://${DOMAIN_NAME}/login/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_USERS_ALLOW_SIGN_UP=false
+    image: grafana/grafana:11.4.0
+    volumes:
+      - ./grafana:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+      - .env:/.env
+    ports:
+      - "3000:3000"
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  prometheus:
+    env_file: ./.env
+    image: prom/prometheus:v3.1.0-rc.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=672h'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prom_data:/prometheus
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  pushgateway:
+    image: prom/pushgateway:v1.2.0
+    env_file: ./.env
+    ports:
+      - "9091:9091"
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  nodeexporter:
+    image: prom/node-exporter:v0.18.1
+    env_file: ./.env
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - 9100:9100
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+  
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    env_file: ./.env
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /sys/fs/cgroup:/cgroup:ro #doesn't work on MacOS only for Linux
+    ports:
+      - "8080:8080"
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - mohirpay_net
+
+  postgres:
+    image: postgres:15-alpine
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - .env:/.env
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "${DB_NAME}", "-U", "${DB_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "5433:5432"
+    networks:
+      - mohirpay_net
+
+
+networks:
+  mohirpay_net:
+    driver: overlay
+
+volumes:
+  pg_data: {}
+  mohirpay_cache: {}
+  mohirpay_flower: {}
+  grafana-data: {}
+  loki_data: {}
+  prom_data: {}
+  grafana_data: {}
