@@ -27,7 +27,19 @@ cd swarm_deploy
 
 ## Launch
 
-1. Run command
+1. Initialize docker swarm mode
+
+```shell
+docker swarm init --advertise-addr `ip address`
+```
+
+2. Add a manager to this swarm
+
+```shell
+docker swarm join-token manager
+```
+
+3. Run command to launch services
 
 ```shell
 docker stack deploy --with-registry-auth -c docker-compose.yaml --prune mohirpay-stack
